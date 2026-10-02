@@ -91,4 +91,49 @@ class Critic(Middleware):
         #     claims = [], citations = [], và viết lại "answer" nói rõ là
         #     không đủ căn cứ.
         #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not isinstance(claims, list) or not claims:
+            return report
+
+        kept = []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            text = claim.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            if ctx.saw(text):
+                kept.append(claim)
+                continue
+
+            split_claims = []
+            for separator in (" và ", " nhưng ", " trong khi "):
+                for offset in range(len(text)):
+                    if not text.startswith(separator, offset):
+                        continue
+                    parts = (text[:offset].strip(), text[offset + len(separator):].strip())
+                    sources = []
+                    for part in parts:
+                        matches = [d for d in ctx.corpus.docs if part and part in d.body]
+                        sources.append(matches)
+                    if all(sources) and sources[0][0].doc_id != sources[1][0].doc_id:
+                        split_claims = [
+                            {**claim, "text": part, "doc_id": docs[0].doc_id}
+                            for part, docs in zip(parts, sources)
+                        ]
+                        break
+                if split_claims:
+                    break
+            if split_claims:
+                kept.extend(split_claims)
+                report["abstain"] = True
+
+        report["claims"] = kept
+        report["citations"] = sorted(
+            {c["doc_id"] for c in kept if isinstance(c.get("doc_id"), str)}
+        )
+        if not kept:
+            report["abstain"] = True
+            report["citations"] = []
+            report["answer"] = "Không đủ bằng chứng đáng tin cậy để kết luận."
+        return report
